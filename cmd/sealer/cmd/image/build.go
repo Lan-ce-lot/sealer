@@ -259,6 +259,9 @@ func applyRegistryToImage(imageID, tag, manifest string, platform v1.Platform, e
 	})
 
 	// TODO optimize the differ.
+	// 第一个参数可以该
+	// tmpDirForLink
+	// get LayerPath from imageID
 	if err = differ.Process(tmpDirForLink, tmpDirForLink); err != nil {
 		return errors.Wrap(err, "failed to download container images")
 	}
