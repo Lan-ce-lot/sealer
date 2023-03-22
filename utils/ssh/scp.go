@@ -24,9 +24,8 @@ import (
 	"strings"
 	"sync"
 
-	dockerioutils "github.com/docker/docker/pkg/ioutils"
-	"github.com/docker/docker/pkg/progress"
 	"github.com/pkg/sftp"
+	"github.com/schollz/progressbar/v3"
 	"github.com/sirupsen/logrus"
 
 	utilsnet "github.com/sealerio/sealer/utils/net"
@@ -38,19 +37,12 @@ const (
 )
 
 var (
-	displayInitOnce sync.Once
-	reader          *io.PipeReader
-	writer          *io.PipeWriter
-	writeFlusher    *dockerioutils.WriteFlusher
-	progressChanOut progress.Output
-	epuMap          = &epuRWMap{epu: map[string]*easyProgressUtil{}}
+	epuMap = &epuRWMap{epu: map[string]*easyProgressUtil{}}
 )
 
 type easyProgressUtil struct {
-	output         progress.Output
-	copyID         string
-	completeNumber int
-	total          int
+	total int
+	bar   progressbar.ProgressBar
 }
 
 type epuRWMap struct {
@@ -72,16 +64,14 @@ func (m *epuRWMap) Set(k string, v *easyProgressUtil) {
 }
 
 func (epu *easyProgressUtil) increment() {
-	epu.completeNumber = epu.completeNumber + 1
-	progress.Update(epu.output, epu.copyID, fmt.Sprintf("%d/%d", epu.completeNumber, epu.total))
+
+	if err := epu.bar.Add(1); err != nil {
+		logrus.Errorf("failed to increment progress bar, err: %s", err)
+	}
 }
 
 func (epu *easyProgressUtil) fail(err error) {
-	progress.Update(epu.output, epu.copyID, fmt.Sprintf("failed, err: %s", err))
-}
-
-func (epu *easyProgressUtil) startMessage() {
-	progress.Update(epu.output, epu.copyID, fmt.Sprintf("%d/%d", epu.completeNumber, epu.total))
+	logrus.Errorf("failed, err: %s", err)
 }
 
 // CopyR scp remote file to local
@@ -130,7 +120,6 @@ func (s *SSH) CopyR(host net.IP, localFilePath, remoteFilePath string) error {
 
 // Copy file or dir to remotePath, add md5 validate
 func (s *SSH) Copy(host net.IP, localPath, remotePath string) error {
-	go displayInitOnce.Do(displayInit)
 	if utilsnet.IsLocalIP(host, s.LocalAddress) {
 		if localPath == remotePath {
 			return nil
@@ -168,23 +157,29 @@ func (s *SSH) Copy(host net.IP, localPath, remotePath string) error {
 
 	epu, ok := epuMap.Get(host.String())
 	if !ok {
-		if progressChanOut == nil {
-			logrus.Warn("call DisplayInit first")
-		}
-
 		epu = &easyProgressUtil{
-			output:         progressChanOut,
-			copyID:         "copying files to " + host.String(),
-			completeNumber: 0,
-			total:          number,
+			bar: *progressbar.NewOptions(
+				number,
+				optionEnableColorCodes,
+				optionSetWidth,
+				optionSetTheme,
+				progressbar.OptionSetDescription(fmt.Sprintf(
+					"[cyan][copy file to %v][reset]", host.String())),
+				progressbar.OptionOnCompletion(func() {
+					fmt.Println()
+				}),
+			),
+			total: number,
 		}
 
 		epuMap.Set(host.String(), epu)
 	} else {
 		epu.total += number
+		err := epu.bar.Set(epu.total)
+		if err != nil {
+			logrus.Errorf("failed to set progress bar, err: %s", err)
+		}
 	}
-
-	epu.startMessage()
 
 	if f.IsDir() {
 		s.copyLocalDirToRemote(host, sftpClient, localPath, remotePath, epu)
