@@ -15,8 +15,13 @@
 package image
 
 import (
+	"strings"
+
+	"github.com/sirupsen/logrus"
+
 	"github.com/spf13/cobra"
 
+	"github.com/sealerio/sealer/pkg/clusterfile"
 	"github.com/sealerio/sealer/pkg/define/options"
 	"github.com/sealerio/sealer/pkg/imageengine"
 )
@@ -45,6 +50,9 @@ func NewRmiCmd() *cobra.Command {
 		Long:    longNewRmiCmdDescription,
 		Example: exampleForRmiCmd,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !removeOpts.Force {
+				args = filterClusterImage(args)
+			}
 			return runRemove(args)
 		},
 	}
@@ -63,4 +71,42 @@ func runRemove(images []string) error {
 	}
 
 	return engine.RemoveImage(removeOpts)
+}
+
+// getRunningClusterImages get cluster image name and id
+// if cluster image not exist, return empty string
+func getRunningClusterImages() (string, string, error) {
+	cf, _, err := clusterfile.GetActualClusterFile()
+	if err != nil {
+		return "", "", err
+	}
+
+	imageName := cf.GetCluster().Spec.Image
+	engine, err := imageengine.NewImageEngine(options.EngineGlobalConfigurations{})
+	if err != nil {
+		return "", "", err
+	}
+
+	image, err := engine.Inspect(&options.InspectOptions{ImageNameOrID: imageName})
+	if err != nil {
+		return "", "", err
+	}
+
+	return imageName, image.ID, nil
+}
+
+// filterClusterImage remove cluster image from images
+func filterClusterImage(images []string) (newImages []string) {
+	cImageName, cImageID, _ := getRunningClusterImages()
+	if cImageName == "" && cImageID == "" {
+		return images
+	}
+	for _, i := range images {
+		if i != cImageName && !strings.Contains(cImageID, i) {
+			newImages = append(newImages, i)
+		} else {
+			logrus.Errorf("Image used by %v: image is in use by the cluster", cImageID)
+		}
+	}
+	return
 }
